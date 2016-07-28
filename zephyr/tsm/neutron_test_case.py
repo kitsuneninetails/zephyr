@@ -273,7 +273,7 @@ class NeutronTestCase(TestCase):
 
         return cleanup_errors
 
-    def create_vm_server(self, name, net_id, gw_ip, sgs=list(),
+    def create_vm_server(self, name, net_id, gw_ip=None, sgs=list(),
                          allowed_address_pairs=None, hv_host=None,
                          port_security_enabled=True, use_dhcp=True,
                          neutron_port=None):

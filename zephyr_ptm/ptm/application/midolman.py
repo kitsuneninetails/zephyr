@@ -85,6 +85,11 @@ class Midolman(application.Application):
             floc = FileLocation(self.log_dir + '/midolman.log')
             return floc.fetch_file()
         elif resource_name == 'fwaas_log':
+
+
+
+
+
             if 'uuid' not in kwargs:
                 # Get ALL firewall logs as a dict of filename -> contents
                 files = {}
