@@ -132,6 +132,9 @@ class PTMUnderlayHost(underlay_host.UnderlayHost):
     def reboot(self):
         return self.underlay_host_obj.reboot()
 
+    def restart_host(self):
+        return self.underlay_host_obj.restart_apps()
+
     def fetch_file(self, file_type, **kwargs):
         return self.underlay_host_obj.fetch_resources_from_apps(
             file_type, **kwargs)

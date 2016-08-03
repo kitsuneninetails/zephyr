@@ -80,3 +80,7 @@ class PTMUnderlaySystem(underlay_system.UnderlaySystem):
         if name == "auth_type":
             return "noauth"
         return self.ptm.get_topology_feature(name)
+
+    def restart_hosts(self):
+        for h in self.ptm.hypervisors.values():
+            h.restart_host()
