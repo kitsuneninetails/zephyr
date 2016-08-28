@@ -12,127 +12,132 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from zephyr.tsm.neutron_test_case import NeutronTestCase
-from zephyr.tsm.neutron_test_case import require_extension
+import time
+
+from zephyr.common import ip
+from zephyr.common import pcap
+from zephyr.tsm import neutron_test_case
+from zephyr.tsm import test_case
 
 
-class TestExternalConnectivity(NeutronTestCase):
-    @require_extension('extraroute')
+class TestExternalConnectivity(neutron_test_case.NeutronTestCase):
+    @neutron_test_case.require_extension('extraroute')
+    @test_case.require_hosts(['edge1', 'ext1'])
     def test_neutron_api_ping_external(self):
-        port1 = None
-        vm1 = None
-        edge_data = None
+        self.create_edge_router()
 
+        (port1, vm1, ip1) = self.create_vm_server(
+            "vm1",
+            net_id=self.main_network['id'],
+            gw_ip=self.main_subnet['gateway_ip'])
+
+        ext_host = self.vtm.get_host('ext1')
+        """
+        :type: zephyr.underlay.underlay_host.UnderlayHost
+        """
+        ext_ip = ext_host.get_ip('eth0')
+        ext_host.add_route(
+            route_ip=ip.IP.make_ip(self.pub_subnet['cidr']),
+            gw_ip=ip.IP('.'.join(ext_ip.split('.')[:3]) + '.2'))
+
+        # Test VM -> exterior host
         try:
-            edge_data = self.create_edge_router()
-
-            port1def = {'port': {'name': 'port1',
-                                 'network_id': self.main_network['id'],
-                                 'admin_state_up': True,
-                                 'tenant_id': 'admin'}}
-            port1 = self.api.create_port(port1def)['port']
-            ip1 = port1['fixed_ips'][0]['ip_address']
-            self.LOG.info('Created port 1: ' + str(port1))
-
-            self.LOG.info("Got VM1 IP: " + str(ip1))
-
-            vm1 = self.vtm.create_vm(ip=ip1, mac=port1['mac_address'])
-
-            vm1.plugin_vm('eth0', port1['id'])
-
-            ext_host = self.ptm.impl_.hosts_by_name['ext1']
-            """:type: Host"""
-            ext_ip = ext_host.interfaces['eth0'].ip_list[0].ip
-
-            # Test Ping
-            self.LOG.info('Pinging from VM1 to external')
-            self.assertTrue(vm1.ping(target_ip=ext_ip))
-
-            # Test TCP
-            ext_host.start_echo_server(ip=ext_ip)
-            echo_response = vm1.send_echo_request(dest_ip=ext_ip)
-            self.assertEqual('ping:echo-reply', echo_response)
-            ext_host.stop_echo_server(ip=ext_ip)
-
-            # Test UDP
-            # TODO(micucci): Fix UDP
-            # ext_host.start_echo_server(ip=ext_ip, protocol='udp')
-            # echo_response = vm1.send_echo_request(dest_ip=ext_ip, protocol='udp')
-            # self.assertEqual('ping:echo-reply', echo_response)
-
+            ext_host.start_echo_server(ip_addr=ext_ip)
+            self.check_ping_and_tcp(vm1, ext_ip)
         finally:
-            if vm1 is not None:
-                vm1.terminate()
+            ext_host.stop_echo_server(ip_addr=ext_ip)
 
-            if port1 is not None:
-                self.api.delete_port(port1['id'])
-
-            self.delete_edge_router(edge_data)
-
-    @require_extension('extraroute')
+    @neutron_test_case.require_extension('extraroute')
+    @test_case.require_hosts(['edge1', 'ext1'])
     def test_neutron_delete_readd_ext_router(self):
-        port1 = None
-        vm1 = None
-        edge_data = None
-        ext_host = None
-        ext_ip = None
+        edge_data = self.create_edge_router()
 
+        (port1, vm1, ip1) = self.create_vm_server(
+            "vm1",
+            net_id=self.main_network['id'],
+            gw_ip=self.main_subnet['gateway_ip'])
+
+        ext_host = self.vtm.get_host('ext1')
+        """
+        :type: zephyr.underlay.underlay_host.UnderlayHost
+        """
+        ext_ip = ext_host.get_ip('eth0')
+        ext_host.add_route(
+            route_ip=ip.IP.make_ip(self.pub_subnet['cidr']),
+            gw_ip=ip.IP('.'.join(ext_ip.split('.')[:3]) + '.2'))
+        # Test VM -> exterior host
         try:
-            edge_data = self.create_edge_router()
-
-            port1def = {'port': {'name': 'port1',
-                                 'network_id': self.main_network['id'],
-                                 'admin_state_up': True,
-                                 'tenant_id': 'admin'}}
-            port1 = self.api.create_port(port1def)['port']
-            ip1 = port1['fixed_ips'][0]['ip_address']
-            self.LOG.info('Created port 1: ' + str(port1))
-
-            self.LOG.info("Got VM1 IP: " + str(ip1))
-
-            vm1 = self.vtm.create_vm(ip=ip1, mac=port1['mac_address'])
-
-            vm1.plugin_vm('eth0', port1['id'])
-
-            ext_host = self.ptm.impl_.hosts_by_name['ext1']
-            """:type: Host"""
-            ext_ip = ext_host.interfaces['eth0'].ip_list[0].ip
-
-            # Test Ping
-            self.LOG.info('Pinging from VM1 to external')
-            self.assertTrue(vm1.ping(target_ip=ext_ip))
-
-            # Test TCP
-            ext_host.start_echo_server(ip=ext_ip)
-            echo_response = vm1.send_echo_request(dest_ip=ext_ip)
-            self.assertEqual('ping:echo-reply', echo_response)
-            ext_host.stop_echo_server(ip=ext_ip)
-
-            # Delete and re-add exterior router
-            self.delete_edge_router(edge_data)
-
-            edge_data = self.create_edge_router()
-
-            # Test Ping
-            self.LOG.info('Pinging again from VM1 to external')
-            self.assertTrue(vm1.ping(target_ip=ext_ip))
-
-            # Test TCP
-            ext_host.start_echo_server(ip=ext_ip)
-            echo_response = vm1.send_echo_request(dest_ip=ext_ip)
-            self.assertEqual('ping:echo-reply', echo_response)
-
+            ext_host.start_echo_server(ip_addr=ext_ip)
+            self.check_ping_and_tcp(vm1, ext_ip)
         finally:
-            try:
-                if ext_host:
-                    ext_host.stop_echo_server(ip=ext_ip)
+            ext_host.stop_echo_server(ip_addr=ext_ip)
 
-                if vm1 is not None:
-                    vm1.terminate()
+        # Delete and re-add exterior router
+        self.delete_edge_router(edge_data)
 
-                if port1 is not None:
-                    self.api.delete_port(port1['id'])
+        self.create_edge_router()
 
-                self.delete_edge_router(edge_data)
-            except Exception as e:
-                self.LOG.fatal("Error deleting topology: " + str(e))
+        # Test VM -> exterior host
+        try:
+            ext_host.start_echo_server(ip_addr=ext_ip)
+            self.check_ping_and_tcp(vm1, ext_ip)
+        finally:
+            ext_host.stop_echo_server(ip_addr=ext_ip)
+
+    @neutron_test_case.require_extension('extraroute')
+    @test_case.require_hosts(['edge1', 'edge2', 'ext1'])
+    def test_neutron_api_ping_with_high_id(self):
+        self.create_edge_router(edge_host_name='edge1',
+                                edge_subnet_cidr='172.16.2.0/24')
+        self.create_edge_router(edge_host_name='edge2',
+                                edge_subnet_cidr='172.17.2.0/24',
+                                gateway=False)
+
+        (porta, vm1, ipa) = self.create_vm_server(
+            "pinger", self.main_network['id'],
+            self.main_subnet['gateway_ip'])
+        """:type: (str, zephyr.vtm.guest.Guest, str)"""
+
+        ext_host = self.vtm.get_host('ext1')
+        """
+        :type: zephyr.underlay.underlay_host.UnderlayHost
+        """
+        ext_ip = ext_host.get_ip('eth0')
+        ext_host.add_route(
+            route_ip=ip.IP.make_ip(self.pub_subnet['cidr']),
+            gw_ip=ip.IP('.'.join(ext_ip.split('.')[:3]) + '.2'))
+
+        # Test Ping
+        self.LOG.info('Pinging from VM1 to external')
+        self.assertTrue(vm1.verify_connection_to_host(ext_host))
+
+        vm1.start_capture('eth0', pfilter=pcap.ICMPProto(),
+                          save_dump_file=True,
+                          save_dump_filename='highid.out')
+
+        # Test Ping with set ID
+        self.LOG.info('Pinging from VM1 to external with '
+                      'low ICMP ID')
+        vm1.send_packet(on_iface='eth0', dest_ip=ext_ip,
+                        packet_type='icmp',
+                        packet_options={'command': 'ping', 'id': '3'})
+        time.sleep(15)
+        vm1.stop_capture('eth0')
+        ret1 = vm1.capture_packets('eth0', count=0)
+
+        self.assertEqual(2, len(ret1))
+
+        vm1.start_capture('eth0', pfilter=pcap.ICMPProto(),
+                          save_dump_file=True,
+                          save_dump_filename='highid2.out')
+        self.LOG.info('Pinging from VM1 to external with '
+                      'high ICMP ID')
+        vm1.send_packet(on_iface='eth0', dest_ip=ext_ip,
+                        packet_type='icmp',
+                        packet_options={'command': 'ping', 'id': '35000'})
+
+        time.sleep(15)
+        vm1.stop_capture('eth0')
+        ret2 = vm1.capture_packets('eth0', count=0)
+
+        self.ef_assertEqual("MI-910", 2, len(ret2))

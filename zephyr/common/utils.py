@@ -17,23 +17,9 @@ import json
 import os
 import pycurl
 from StringIO import StringIO
-from subprocess import Popen
 import unittest
 
 import xmlrunner
-
-from zephyr.common.cli import LinuxCLI
-
-
-def terminate_process(process, signal='TERM'):
-    """
-    Poll and terminate a process if it is still running.  If it doesn't exit
-    within 5 seconds, send a SIGKILL signal to the process.
-    :type process: Popen
-    :type signal: str
-    :return:
-    """
-    LinuxCLI().cmd('pkill -s ' + str(process.pid) + ' -' + signal)
 
 
 def get_class_from_fqn(fqn):
@@ -118,3 +104,54 @@ def run_unit_test(test_case_name):
             print('Exception: ' + e.message + ', ' + str(e.args))
     else:
         xmlrunner.XMLTestRunner(output=xml_output_dir).run(suite)
+
+
+def check_string_for_tag(main_str, tag, num_occur=1, exact=True):
+    """
+    :type main_str: str
+    :type tag: str
+    :type num_occur: int
+    :type exact: bool
+    """
+    indx = 0
+    for i in range(0, num_occur):
+        found_indx = main_str.find(tag, indx)
+        if found_indx == -1:
+            return False
+        indx = found_indx + len(tag)
+    if exact:
+        found_indx = main_str.find(tag, indx)
+        if found_indx != -1:
+            return False
+
+    return True
+
+
+def make_gateway_ip(real_ip):
+    # Figure out a default gw based on IP, usually
+    # (IP & subnet_mask + 1)
+    subnet_mask = [255, 255, 255, 255]
+    if real_ip.subnet != "":
+        smask = int(real_ip.subnet)
+        subnet_mask = []
+
+        current_mask = smask
+        for i in range(0, 4):
+            if current_mask > 8:
+                subnet_mask.append(255)
+            else:
+                lastmask = 0
+                for j in range(0, current_mask):
+                    lastmask += pow(2, 8 - (j + 1))
+                subnet_mask.append(lastmask)
+            current_mask -= 8
+
+    split_ip = real_ip.ip.split(".")
+    gw_ip_split = []
+    for ip_part in split_ip:
+        gw_ip_split.append(int(ip_part) &
+                           subnet_mask[len(gw_ip_split)])
+
+    gw_ip_split[3] += 1
+    gw_ip = '.'.join(map(lambda x: str(x), gw_ip_split))
+    return gw_ip.strip()

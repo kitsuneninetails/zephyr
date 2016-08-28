@@ -20,15 +20,13 @@ import os
 import sys
 import traceback
 
-from zephyr.common.cli import LinuxCLI
 from zephyr.common.exceptions import ArgMismatchException
 from zephyr.common.exceptions import ExitCleanException
 from zephyr.common.exceptions import ObjectNotFoundException
 from zephyr.common.exceptions import SubprocessFailedException
 from zephyr.common.exceptions import TestException
 from zephyr.common.log_manager import LogManager
-from zephyr.common.utils import get_class_from_fqn
-from zephyr.ptm.physical_topology_manager import PhysicalTopologyManager
+from zephyr.common import zephyr_constants as z_con
 from zephyr.tsm.test_case import TestCase
 from zephyr.tsm.test_system_manager import TestSystemManager
 from zephyr.vtm.neutron_api import create_neutron_client
@@ -36,10 +34,9 @@ from zephyr.vtm.virtual_topology_manager import VirtualTopologyManager
 
 
 def usage(except_obj):
-    print('Usage: tsm-run.py -t <tests> [-t <topology>] [-n <name>] ')
-    print('         [-p <file>] [-d] [-p <ptm_class>]')
-    print('         [-c <neutron|midonet> --client-args="<arg=value,...>"]')
-    print('         [extra_options]')
+    print('Usage: tsm-run.py -t <tests> ')
+    print('                  [-u <underlay_config>] [-n <name>] [-d]')
+    print('                  [extra_options]')
     print('')
     print('   Test Execution Options:')
     print('     -t, --tests <tests>')
@@ -47,6 +44,10 @@ def usage(except_obj):
     print('         separated by commas with no spaces.')
     print('     -n, --name <name>')
     print('         Name this test run (timestamp by default).')
+    print('   Underlay Options:')
+    print('     -u, --underlay_config <config>')
+    print('         Load the underlay from the given config file. ')
+    print('         ("' + z_con.DEFAULT_UNDERLAY_CONFIG + '" by default)')
     print('   Client API Options:')
     print('     -c, --client <client>')
     print('         OpenStack Network client to use.  Currently can be')
@@ -59,17 +60,6 @@ def usage(except_obj):
     print('         List of arguments to give the selected client.  These')
     print('         should be key=value pairs, separated by commas, with no')
     print('         spaces.')
-    print('   Physical Topology Management Options:')
-    print('     -p, --ptm <ptm-class>')
-    print('         Use the specified ptm implementation class')
-    print('         (ConfiguredHostPTMImpl is the default).')
-    print('   ConfiguredHostPTMImpl Specific Options:')
-    print('     -o, --topology <topo>')
-    print('         State which physical topologys to configure and run.')
-    print('         Topologies are defined in config/physical_topologies.')
-    print('         By default, tests will run against a 2NSDB + 3Compute')
-    print('         + 2Edge topology. Only one topology can be run per')
-    print('         execution of this command.')
     print('   Debug Options:')
     print('     -d, --debug')
     print('         Turn on DEBUG logging (and split log output to stdout).')
@@ -93,9 +83,8 @@ try:
             'd'
             't:'
             'n:'
-            'o:'
+            'u:'
             'c:'
-            'p:'
             'l:'
             'r:'
             'a:'
@@ -104,11 +93,10 @@ try:
             'help',
             'tests=',
             'name=',
-            'topologies=',
+            'underlay_config=',
             'client=',
             'client-auth=',
             'client-args=',
-            'ptm=',
             'log-dir=',
             'debug',
             'results-dir=',
@@ -120,14 +108,12 @@ try:
     client_auth_type = 'noauth'
     client_args = {}
     tests = ''
-    ptm_config_file = ''
+    underlay_config = z_con.DEFAULT_UNDERLAY_CONFIG
     debug = False
     test_debug = False
     log_dir = '/tmp/zephyr/logs'
     results_dir = '/tmp/zephyr/results'
-    ptm_impl_type = (
-        'zephyr.ptm.impl.configured_host_ptm_impl.ConfiguredHostPTMImpl')
-    topology = 'config/physical_topologies/2z-3c-2edge.json'
+    topology = '2z-3c-2edge.json'
     name = datetime.datetime.utcnow().strftime('%Y_%m_%d_%H-%M-%S')
 
     for arg, value in arg_map:
@@ -142,14 +128,12 @@ try:
             tests = value.split(',')
         elif arg in ('-n', '--name'):
             name = value
-        elif arg in ('-o', '--topologies'):
-            topology = value
+        elif arg in ('-u', '--underlay-config'):
+            underlay_config = value
         elif arg in ('-c', '--client'):
             client_impl_type = value
         elif arg in ('-a', '--client-auth'):
             client_auth_type = value
-        elif arg in ('-p', '--ptm'):
-            ptm_impl_type = value
         elif arg in ('-l', '--log-dir'):
             log_dir = value
         elif arg in ('-d', '--debug'):
@@ -178,7 +162,10 @@ try:
         usage(ArgMismatchException(
             'Must specify at least one test with the -t or --tests option'))
 
-    root_dir = LinuxCLI().cmd('pwd').stdout.strip()
+    tsm_run_dir = os.path.dirname(os.path.abspath(__file__))
+
+    z_con.ZephyrInit.init(tsm_run_dir + "/zephyr.conf")
+    root_dir = z_con.ZephyrInit.BIN_ROOT_DIR
     print('Setting root dir to: ' + root_dir)
 
     client_impl = None
@@ -206,21 +193,17 @@ try:
         log_level=logging.DEBUG if debug is True else logging.INFO)
     log_manager.rollover_logs_fresh(file_filter='*.log')
 
-    console_log.debug('Setting up ptm from impl: ' + ptm_impl_type)
-    ptm_impl = get_class_from_fqn(ptm_impl_type)(
-        root_dir=root_dir, log_manager=log_manager)
-    ptm_impl.configure_logging(debug=debug)
-    ptm = PhysicalTopologyManager(ptm_impl)
-
+    # TODO(micucci): This will take a map specifying how to create VMs
+    # instead of a PTM
     console_log.debug('Setting up vtm')
     vtm = VirtualTopologyManager(
-        physical_topology_manager=ptm,
         client_api_impl=client_impl,
         log_manager=log_manager)
     vtm.configure_logging(debug=debug)
+    vtm.read_underlay_config(underlay_config)
 
     console_log.debug('Setting up tsm')
-    tsm = TestSystemManager(ptm, vtm, log_manager=log_manager)
+    tsm = TestSystemManager(vtm, log_manager=log_manager)
     tsm.configure_logging(debug=debug)
 
     if test_debug:
@@ -283,7 +266,7 @@ try:
 
     finally:
         rdir = results_dir + '/' + name
-        tsm.create_results(results_dir=rdir, leeway=3)
+        tsm.create_results(results_dir=rdir)
 
 except ExitCleanException:
     exit(1)

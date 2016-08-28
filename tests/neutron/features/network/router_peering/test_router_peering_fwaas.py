@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import json
-
 from zephyr.tsm.neutron_test_case import require_extension
-from zephyr.tsm.test_case import require_topology_feature
+from zephyr.tsm import test_case
 
 from router_peering_utils import L2GWNeutronTestCase
 
@@ -25,16 +23,8 @@ class TestRouterPeeringFWaaS(L2GWNeutronTestCase):
     @require_extension('extraroute')
     @require_extension('gateway-device')
     @require_extension('l2-gateway')
-    @require_topology_feature('config_file', lambda a, b: a in b,
-                              ['config/physical_topologies/2z-3c-2edge.json'])
+    @test_case.require_hosts(['tun1', 'tun2'])
     def test_peered_routers_vtep_router(self):
-        try:
-            self.connect_through_vtep_router()
-        finally:
-            self.clean_vm_servers()
-            self.clean_topo()
-
-    def connect_through_vtep_router(self):
         a_cidr = "192.168.20.0/24"
         a_pub_cidr = "200.200.120.0/24"
         a_net = self.create_network('EAST')
@@ -94,22 +84,34 @@ class TestRouterPeeringFWaaS(L2GWNeutronTestCase):
             "192.168.200.2", a_router_mac, a_cidr,
             a_peer_topo['az_iface_port']['id'], "1.1.1.2")
 
-        vmb.start_echo_server(ip=ipb)
-        self.verify_connectivity(vma, ipb)
-
-        vma.start_echo_server(ip=ipa)
-        self.verify_connectivity(vmb, ipa)
+        self.assertTrue(vma.verify_connection_to_host(
+            vmb, use_icmp=False, target_port=7777))
+        self.assertTrue(vmb.verify_connection_to_host(
+            vma, use_icmp=False, target_port=8888))
 
         fwp = self.create_firewall_policy('POLICY')
-        fw = self.create_firewall(fwp['id'], router_ids=[a_tenant_router['id']])
+        fw = self.create_firewall(fwp['id'],
+                                  router_ids=[a_tenant_router['id']])
         fwr_icmp = self.create_firewall_rule(action='allow', protocol='icmp')
-        fwr_tcp = self.create_firewall_rule(action='allow', protocol='tcp')
+        fwr_tcp7 = self.create_firewall_rule(action='allow', protocol='tcp',
+                                             dest_port=7777)
+        fwr_tcp8 = self.create_firewall_rule(action='allow', protocol='tcp',
+                                             dest_port=8888)
 
         self.assertFalse(vma.ping(target_ip=ipb))
         self.assertFalse(vmb.ping(target_ip=ipa))
 
         self.insert_firewall_rule(fwp['id'], fwr_icmp['id'])
-        self.insert_firewall_rule(fwp['id'], fwr_tcp['id'])
 
-        self.verify_connectivity(vma, ipb)
-        self.verify_connectivity(vmb, ipa)
+        self.assertTrue(vma.verify_connection_to_host(
+            vmb, use_tcp=False))
+        self.assertTrue(vmb.verify_connection_to_host(
+            vma, use_tcp=False))
+
+        self.insert_firewall_rule(fwp['id'], fwr_tcp7['id'])
+        self.insert_firewall_rule(fwp['id'], fwr_tcp8['id'])
+
+        self.assertTrue(vma.verify_connection_to_host(
+            vmb, use_icmp=False, target_port=7777))
+        self.assertTrue(vmb.verify_connection_to_host(
+            vma, use_icmp=False, target_port=8888))

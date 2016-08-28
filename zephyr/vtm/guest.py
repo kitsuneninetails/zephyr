@@ -12,65 +12,94 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from zephyr.common.exceptions import *
-from zephyr.common.echo_server import DEFAULT_ECHO_PORT
+import time
+from zephyr.common import exceptions
+from zephyr.common.zephyr_constants import DEFAULT_ECHO_PORT
 
 PACKET_CAPTURE_TIMEOUT = 10
 
 
 class Guest(object):
     """
-    A class to wrap a VM from the Physical Topology Manager
+    A class to wrap a VM from the physical topology
     """
 
-    def __init__(self, vm_host):
-        self.vm_host = vm_host
-        """ :type: VMHost"""
+    def __init__(self, vm_underlay):
+        self.vm_underlay = vm_underlay
+        """ :type: zephyr.vtm.underlay.underlay_host.UnderlayHost"""
         self.open_ports_by_id = set()
         """ :type: set[str]"""
+        self.name = vm_underlay.name
 
-    def plugin_vm(self, iface, port):
-        """Links an interface on this VM to a virtual network port
+    def setup_vm_network(self, ip_addr=None, gw_ip=None):
+        return self.vm_underlay.setup_vm_network(ip_addr, gw_ip)
+
+    def plugin_port(self, iface, port_id, mac=None, vlans=None):
+        """Created and links an interface on this VM to a virtual
+        network port, then plugs that
             * bind interface to MidoNet with mm-ctl
             * set iface to the indicated mac address (if provided)
         :type iface: str
-        :type port: str
-        :type port: str
+        :type port_id: str
+        :type mac: str | None
+        :type vlans: list[str] | None
         """
-        self.vm_host.LOG.debug("Plugging in VM interface: " + iface +
-                               " to port: " + str(port))
-        self.vm_host.plugin_iface(iface, port)
-        self.open_ports_by_id.add(port)
 
-    def unplug_vm(self, port):
+        self.vm_underlay.LOG.debug("Plugging in VM interface: " + iface +
+                                   " to port: " + str(port_id))
+        self.vm_underlay.plugin_port(iface, port_id, mac=mac, vlans=vlans)
+        self.open_ports_by_id.add(port_id)
+
+    def unplug_port(self, port_id):
         """Unlinks a port on this VM from the virtual network
-        :type port: str
+        :type port_id: str
         """
-        self.vm_host.LOG.debug("Unplugging VM port: " + str(port))
-        self.vm_host.unplug_iface(port)
-        self.open_ports_by_id.remove(port)
+        self.vm_underlay.LOG.debug("Unplugging VM port: " + str(port_id))
+        self.vm_underlay.unplug_port(port_id)
+        self.open_ports_by_id.remove(port_id)
+
+    def get_hypervisor_name(self):
+        return self.vm_underlay.get_hypervisor_name()
+
+    def add_route(self, route_ip='default', gw_ip=None, dev=None):
+        return self.vm_underlay.add_route(route_ip, gw_ip, dev)
+
+    def del_route(self, route_ip):
+        return self.vm_underlay.del_route(route_ip)
+
+    def add_ip(self, iface_name, ip_addr):
+        return self.vm_underlay.add_ip(iface_name, ip_addr)
+
+    def request_ip(self, iface_name):
+        return self.vm_underlay.request_ip(iface_name)
+
+    def get_ip(self, iface_name):
+        return self.vm_underlay.get_ip(iface_name)
+
+    def reset_default_route(self, ip_addr):
+        return self.vm_underlay.reset_default_route(ip_addr)
 
     def clear_arp(self):
-        return self.vm_host.flush_arp()
+        return self.vm_underlay.flush_arp()
 
     def send_arp_request(self, on_iface, ip):
-        return self.vm_host.send_arp_packet(iface=on_iface, dest_ip=ip,
-                                            command='request', count=1)
+        return self.vm_underlay.send_arp_packet(iface=on_iface, dest_ip=ip,
+                                                command='request', count=1)
 
     def send_arp_reply(self, on_iface, src_mac, dest_mac, src_ip, dest_ip):
-        return self.vm_host.send_arp_packet(
+        return self.vm_underlay.send_arp_packet(
             iface=on_iface, dest_ip=dest_ip,
             source_ip=src_ip, source_mac=src_mac, dest_mac=dest_mac,
             command='reply', count=1)
 
     def send_packet(self, on_iface='eth0', **kwargs):
-        return self.vm_host.send_custom_packet(iface=on_iface, **kwargs)
+        return self.vm_underlay.send_custom_packet(iface=on_iface, **kwargs)
 
     def send_tcp_packet(self, on_iface='eth0', data=None,
                         dest_ip=None,
                         source_port=None, dest_port=None,
                         packet_options=None, count=None):
-        return self.vm_host.send_tcp_packet(
+        return self.vm_underlay.send_tcp_packet(
             iface=on_iface, dest_ip=dest_ip,
             source_port=source_port, dest_port=dest_port,
             data=data, packet_options=packet_options, count=count)
@@ -93,12 +122,12 @@ class Guest(object):
         :param save_dump_filename: str: Filename to save temporary packet
         capture file
         """
-        self.vm_host.start_capture(interface=on_iface,
-                                   count=count, ptype=ptype,
-                                   pfilter=pfilter, callback=callback,
-                                   callback_args=callback_args,
-                                   save_dump_file=save_dump_file,
-                                   save_dump_filename=save_dump_filename)
+        self.vm_underlay.start_capture(interface=on_iface,
+                                       count=count, ptype=ptype,
+                                       pfilter=pfilter, callback=callback,
+                                       callback_args=callback_args,
+                                       save_dump_file=save_dump_file,
+                                       save_dump_filename=save_dump_filename)
 
     def capture_packets(self, on_iface='eth0', count=1,
                         timeout=PACKET_CAPTURE_TIMEOUT):
@@ -113,8 +142,9 @@ class Guest(object):
         :param timeout: int
         :return: list[PCAPPacket]
         """
-        return self.vm_host.capture_packets(interface=on_iface, count=count,
-                                            timeout=timeout)
+        return self.vm_underlay.capture_packets(
+            interface=on_iface, count=count,
+            timeout=timeout)
 
     def stop_capture(self, on_iface='eth0'):
         """
@@ -122,9 +152,49 @@ class Guest(object):
         on interface.
         :param on_iface: str
         """
-        self.vm_host.stop_capture(interface=on_iface)
+        self.vm_underlay.stop_capture(interface=on_iface)
 
-    def ping(self, target_ip, on_iface='eth0', count=3, timeout=None):
+    def verify_connection_to_host(self, far_host,
+                                  target_ip_addr=None,
+                                  target_port=DEFAULT_ECHO_PORT,
+                                  use_icmp=True, use_tcp=True,
+                                  timeout=20):
+        target_ip = (target_ip_addr
+                     if target_ip_addr
+                     else far_host.get_ip('eth0'))
+
+        if use_tcp:
+            deadline = time.time() + timeout
+            far_host.start_echo_server(
+                ip_addr="", port=target_port)
+            try:
+                replied = False
+                while not replied:
+                    try:
+                        if time.time() > deadline:
+                            return False
+                        reply = self.send_echo_request(
+                            dest_ip=target_ip,
+                            dest_port=target_port)
+                        if reply != "":
+                            replied = True
+                    except exceptions.SubprocessFailedException:
+                        pass
+            finally:
+                far_host.stop_echo_server(
+                    ip_addr="", port=target_port)
+
+        if use_icmp:
+            deadline = time.time() + timeout
+            while not self.ping(
+                    target_ip=target_ip, count=1, timeout=3):
+                if time.time() > deadline:
+                    return False
+                time.sleep(0)
+
+        return True
+
+    def ping(self, target_ip, on_iface=None, count=3, timeout=None):
         """
         Ping the target_ip on given interface and return true if the ping
         succeeds, false otherwise.
@@ -134,37 +204,38 @@ class Guest(object):
         :param timeout: int
         :return: bool
         """
-        return self.vm_host.ping(target_ip=target_ip, iface=on_iface,
-                                 count=count, timeout=timeout)
+        return self.vm_underlay.ping(target_ip=target_ip, iface=on_iface,
+                                     count=count, timeout=timeout)
 
-    def start_echo_server(self, ip='localhost', port=DEFAULT_ECHO_PORT,
-                          echo_data="echo-reply", protocol='tcp'):
+    def start_echo_server(self, ip_addr='localhost', port=DEFAULT_ECHO_PORT,
+                          echo_data="pong", protocol='tcp'):
         """
         Start an echo server listening on given ip/port (default to
         localhost:80) with the given protocol, which returns the echo_data
         on any TCP connection made to the port.
-        :param ip: str
+        :param ip_addr: str
         :param port: int
         :param echo_data: str
         :param protocol: str
-        :return: CommandStatus
+        :return: bool
         """
-        return self.vm_host.start_echo_server(ip, port, echo_data, protocol)
+        return self.vm_underlay.start_echo_server(
+            ip_addr, port, echo_data, protocol)
 
-    def stop_echo_server(self, ip='localhost', port=DEFAULT_ECHO_PORT):
+    def stop_echo_server(self, ip_addr='localhost', port=DEFAULT_ECHO_PORT):
         """
         Stop an echo server that has been started on given ip/port (defaults to
         localhost:80).  If echo service has not been started, do nothing.
-        :param ip: str
+        :param ip_addr: str
         :param port: int
-        :return:
+        :return: (file, file) | None
         """
-        self.vm_host.stop_echo_server(ip, port)
+        return self.vm_underlay.stop_echo_server(ip_addr, port)
 
     def send_echo_request(self, dest_ip='localhost',
                           dest_port=DEFAULT_ECHO_PORT,
-                          echo_request='ping',
-                          source_ip=None, protocol='tcp'):
+                          echo_request='ping', protocol='tcp',
+                          timeout=10):
         """
         Create a TCP connection to send specified request string over the
         specified protocol to dest_ip on dest_port (defaults to localhost:80)
@@ -172,12 +243,13 @@ class Guest(object):
         :param dest_ip: str
         :param dest_port: int
         :param echo_request: str
-        :param source_ip: str
         :param protocol: str
         :return: str
         """
-        return self.vm_host.send_echo_request(
-            dest_ip, dest_port, echo_request, source_ip, protocol)
+        return self.vm_underlay.send_echo_request(
+            dest_ip=dest_ip, dest_port=dest_port,
+            echo_request=echo_request, protocol=protocol,
+            timeout=timeout)
 
     def execute(self, cmd_line, timeout=None, blocking=True):
         """
@@ -188,14 +260,14 @@ class Guest(object):
         :param blocking: bool
         :return:
         """
-        result = self.vm_host.cli.cmd(cmd_line, timeout=timeout,
-                                      blocking=blocking)
+        result = self.vm_underlay.execute(cmd_line, timeout=timeout,
+                                          blocking=blocking)
         """ :type: CommandStatus"""
         if result.ret_code != 0:
-            raise SubprocessFailedException('Retcode: ' +
-                                            str(result.ret_code) +
-                                            ', cmd output: ' + result.stdout +
-                                            ', cmd error: ' + result.stderr)
+            raise exceptions.SubprocessFailedException(
+                'Retcode: ' + str(result.ret_code) +
+                ', cmd output: ' + result.stdout +
+                ', cmd error: ' + result.stderr)
         return result
 
     def terminate(self):
@@ -204,8 +276,6 @@ class Guest(object):
         :return:
         """
         for p in self.open_ports_by_id:
-            self.vm_host.unplug_iface(p)
+            self.vm_underlay.unplug_port(p)
         self.open_ports_by_id.clear()
-        self.vm_host.net_down()
-        self.vm_host.shutdown()
-        self.vm_host.remove()
+        self.vm_underlay.terminate()

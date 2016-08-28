@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from zephyr.tsm.neutron_test_case import require_extension
-from zephyr.tsm.test_case import require_topology_feature
+from zephyr.tsm import test_case
 
 from router_peering_utils import L2GWNeutronTestCase
 
@@ -23,16 +23,8 @@ class TestRouterPeeringSecurityGroups(L2GWNeutronTestCase):
     @require_extension('extraroute')
     @require_extension('gateway-device')
     @require_extension('l2-gateway')
-    @require_topology_feature('config_file', lambda a, b: a in b,
-                              ['config/physical_topologies/2z-3c-2edge.json'])
+    @test_case.require_hosts(['tun1', 'tun2'])
     def test_peered_routers_conn_tracking(self):
-        try:
-            self.connect_through_vtep_router()
-        finally:
-            self.clean_vm_servers()
-            self.clean_topo()
-
-    def connect_through_vtep_router(self):
         a_cidr = "192.168.20.0/24"
         a_pub_cidr = "200.200.120.0/24"
         a_net = self.create_network('EAST')
@@ -56,7 +48,8 @@ class TestRouterPeeringSecurityGroups(L2GWNeutronTestCase):
                                              pub_net_id=b_pub_net['id'],
                                              priv_sub_ids=[b_sub['id']])
         b_sg = self.create_security_group('SG_B')
-        self.create_security_group_rule(b_sg['id'], remote_ip_prefix=ipa + '/32')
+        self.create_security_group_rule(b_sg['id'],
+                                        remote_ip_prefix=ipa + '/32')
 
         (portb, vmb, ipb) = self.create_vm_server(
             "B", b_net['id'], b_sub['gateway_ip'], sgs=[b_sg['id']])
@@ -96,5 +89,5 @@ class TestRouterPeeringSecurityGroups(L2GWNeutronTestCase):
             "192.168.200.2", a_router_mac, a_cidr,
             a_peer_topo['az_iface_port']['id'], "1.1.1.2")
 
-        vmb.start_echo_server(ip=ipb)
-        self.verify_connectivity(vma, ipb)
+        vmb.start_echo_server(ip_addr=ipb)
+        self.check_ping_and_tcp(vma, ipb)

@@ -12,149 +12,231 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from router_peering_utils import L2GWNeutronTestCase
 import unittest
 
+from router_peering_utils import L2GWNeutronTestCase
+from zephyr.tsm.neutron_test_case import GuestData
 from zephyr.tsm.neutron_test_case import require_extension
-from zephyr.tsm.test_case import require_topology_feature
-from zephyr.vtm.neutron_api import create_neutron_main_pub_networks
-from zephyr.vtm.neutron_api import delete_neutron_main_pub_networks
+from zephyr.tsm import test_case
+
+from tests.neutron.features.lbaas.lbaas_test_utils import DEFAULT_POOL_PORT
+from tests.neutron.features.lbaas.lbaas_test_utils import LBaaSTestCase
+
+PACKETS_TO_SEND = 20
+EGI = 'external_gateway_info'
+EFI = 'external_fixed_ips'
 
 
-class TestRouterPeeringLBaaS(L2GWNeutronTestCase):
+class TestRouterPeeringLBaaS(L2GWNeutronTestCase, LBaaSTestCase):
     @require_extension('extraroute')
     @require_extension('gateway-device')
     @require_extension('l2-gateway')
-    @require_topology_feature('config_file', lambda a, b: a in b,
-                              ['config/physical_topologies/2z-3c-2edge.json'])
-    @unittest.skip("needs lbaas refactor")
-    def test_peered_rotuers_with_lbaas(self):
-        vm1 = None
-        vm2 = None
-        ip1 = None
-        ip2 = None
-        port1 = None
-        port2 = None
+    @unittest.skip("failing for unknown reasons: MI-1139")
+    @test_case.require_hosts(['tun1', 'tun2'])
+    def test_peered_routers_with_lbaas_members_same_side_az(self):
+        a_topo, b_topo = self.connect_through_vtep_router()
 
-        east_topo = None
-        east_l2gw_topo = None
-        west_topo = None
-        west_l2gw_topo = None
+        self.create_member_net()
+        self.create_lbaas_net()
+        self.create_pinger_net()
+        self.create_lb_router(gw_net_id=a_topo['pub_network']['id'])
 
-        peered_topo = None
+        poola = self.create_pool(
+            subnet_id=self.topos['main']['lbaas']['subnet']['id'])
 
-        segment_id = '100'
+        vipa = self.create_vip(subnet_id=a_topo['pub_subnet']['id'],
+                               protocol_port=DEFAULT_POOL_PORT,
+                               name='poola-vip1',
+                               pool_id=poola['id'])
+        vms = self.create_member_vms(num_members=2)
+        g1 = vms[0]
+        g2 = vms[1]
 
-        east_main_cidr = "192.168.20.0/24"
-        west_main_cidr = "192.168.30.0/24"
+        g_pinger = self.create_pinger_vm()
 
-        try:
+        self.create_member(pool_id=poola['id'],
+                           ip_addr=g1.ip)
+        self.create_member(pool_id=poola['id'],
+                           ip_addr=g2.ip)
 
-            east_topo = create_neutron_main_pub_networks(
-                    self.api,
-                    main_name='main_east',
-                    main_subnet_cidr=east_main_cidr,
-                    pub_name='pub_east',
-                    pub_subnet_cidr="200.200.120.0/24",
-                    log=self.LOG)
-            west_topo = create_neutron_main_pub_networks(
-                    self.api,
-                    main_name='main_west',
-                    main_subnet_cidr=west_main_cidr,
-                    pub_name='pub_west',
-                    pub_subnet_cidr="200.200.130.0/24",
-                    log=self.LOG)
+        repliesa = self.send_packets_to_vip(
+            [g1, g2], g_pinger, vipa['address'],
+            num_packets=PACKETS_TO_SEND)
 
-            port1 = self.api.create_port({
-                'port': {'name': 'port_vm1',
-                         'network_id': east_topo.main_net.network['id'],
-                         'admin_state_up': True,
-                         'tenant_id': 'admin'}})['port']
-            ip1 = port1['fixed_ips'][0]['ip_address']
+        self.check_host_replies_against_rr_baseline(
+            [g1, g2], repliesa,
+            total_expected=PACKETS_TO_SEND,
+            identifier="poolA")
 
-            vm1 = self.vtm.create_vm(
-                    ip=ip1,
-                    mac=port1['mac_address'],
-                    gw_ip=east_topo.main_net.subnet['gateway_ip'])
-            """ :type: Guest"""
+    @require_extension('extraroute')
+    @require_extension('gateway-device')
+    @require_extension('l2-gateway')
+    @unittest.skip("failing for unknown reasons: MI-1139")
+    @test_case.require_hosts(['tun1', 'tun2'])
+    def test_peered_routers_with_lbaas_members_far_side_az(self):
+        a_topo, b_topo = self.connect_through_vtep_router()
 
-            vm1.plugin_vm('eth0', port1['id'])
+        poola = self.create_pool(
+            subnet_id=a_topo['main_subnet']['id'])
 
-            port2 = self.api.create_port({
-                'port': {'name': 'port_vm2',
-                         'network_id': west_topo.main_net.network['id'],
-                         'admin_state_up': True,
-                         'tenant_id': 'admin'}})['port']
-            ip2 = port2['fixed_ips'][0]['ip_address']
+        vipa = self.create_vip(subnet_id=a_topo['pub_subnet']['id'],
+                               protocol_port=DEFAULT_POOL_PORT,
+                               name='poola-vip1',
+                               pool_id=poola['id'])
 
-            vm2 = self.vtm.create_vm(
-                    ip=ip2,
-                    mac=port2['mac_address'],
-                    gw_ip=west_topo.main_net.subnet['gateway_ip'])
-            """ :type: Guest"""
+        g1 = GuestData(*self.create_vm_server(
+            name='m_mn_0',
+            net_id=b_topo['main_network']['id'],
+            gw_ip=b_topo['main_subnet']['gateway_ip']))
+        g2 = GuestData(*self.create_vm_server(
+            name='m_mn_1',
+            net_id=b_topo['main_network']['id'],
+            gw_ip=b_topo['main_subnet']['gateway_ip']))
 
-            vm2.plugin_vm('eth0', port2['id'])
+        g_pinger = GuestData(*self.create_vm_server(
+            name='p_mn',
+            net_id=a_topo['main_network']['id'],
+            gw_ip=a_topo['main_subnet']['gateway_ip']))
 
-            # Test that VM canNOT reach via internal IP
-            # Ping
-            self.assertFalse(vm1.ping(target_ip=ip2))
-            self.assertFalse(vm2.ping(target_ip=ip1))
+        self.create_member(pool_id=poola['id'],
+                           ip_addr=g1.ip)
+        self.create_member(pool_id=poola['id'],
+                           ip_addr=g2.ip)
 
-            # Peer the routers!
-            east_l2gw_topo = self.setup_peer_l2gw("1.1.1.0/24", "1.1.1.2",
-                                                  "1.1.1.3", "tun2", "eth1",
-                                                  "192.168.200.0/24",
-                                                  "192.168.200.2", segment_id,
-                                                  east_topo.router.router,
-                                                  "EAST")
-            west_l2gw_topo = self.setup_peer_l2gw("2.2.2.0/24", "2.2.2.2",
-                                                  "2.2.2.3", "tun1", "eth1",
-                                                  "192.168.200.0/24",
-                                                  "192.168.200.3", segment_id,
-                                                  west_topo.router.router,
-                                                  "WEST")
+        repliesa = self.send_packets_to_vip(
+            [g1, g2], g_pinger, vipa['address'],
+            num_packets=PACKETS_TO_SEND)
 
-            peered_topo = self.peer_sites(east=east_l2gw_topo,
-                                          east_private_cidr=east_main_cidr,
-                                          west=west_l2gw_topo,
-                                          west_private_cidr=west_main_cidr,
-                                          segment_id=segment_id)
+        self.check_host_replies_against_rr_baseline(
+            [g1, g2], repliesa,
+            total_expected=PACKETS_TO_SEND,
+            identifier="poolA")
 
-            # Test that VM1 can reach VM2 via internal IP
-            # Ping
-            self.assertTrue(vm1.ping(target_ip=ip2))
-            self.assertTrue(vm2.ping(target_ip=ip1))
+    @require_extension('extraroute')
+    @require_extension('gateway-device')
+    @require_extension('l2-gateway')
+    @unittest.skip("failing for unknown reasons: MI-1139")
+    @test_case.require_hosts(['tun1', 'tun2'])
+    def test_peered_routers_with_lbaas_members_both_sides_az(self):
+        a_topo, b_topo = self.connect_through_vtep_router()
 
-            # TCP
-            vm2.start_echo_server(ip=ip2)
-            echo_response = vm1.send_echo_request(dest_ip=ip2)
-            self.assertEqual('ping:echo-reply', echo_response)
+        poola = self.create_pool(
+            subnet_id=a_topo['main_subnet']['id'])
 
-            # Send second packet
-            echo_response = vm1.send_echo_request(dest_ip=ip2)
-            self.assertEqual('ping:echo-reply', echo_response)
+        vipa = self.create_vip(subnet_id=a_topo['pub_subnet']['id'],
+                               protocol_port=DEFAULT_POOL_PORT,
+                               name='poola-vip1',
+                               pool_id=poola['id'])
 
-            # TCP
-            vm1.start_echo_server(ip=ip1)
-            echo_response = vm2.send_echo_request(dest_ip=ip1)
-            self.assertEqual('ping:echo-reply', echo_response)
+        g1 = GuestData(*self.create_vm_server(
+            name='m_mn_0',
+            net_id=a_topo['main_network']['id'],
+            gw_ip=a_topo['main_subnet']['gateway_ip']))
+        g2 = GuestData(*self.create_vm_server(
+            name='m_mn_1',
+            net_id=b_topo['main_network']['id'],
+            gw_ip=b_topo['main_subnet']['gateway_ip']))
 
-            # Send second packet
-            echo_response = vm2.send_echo_request(dest_ip=ip1)
-            self.assertEqual('ping:echo-reply', echo_response)
+        g_pinger = GuestData(*self.create_vm_server(
+            name='p_mn',
+            net_id=a_topo['main_network']['id'],
+            gw_ip=a_topo['main_subnet']['gateway_ip']))
 
-        finally:
-            if vm2 and ip2:
-                vm2.stop_echo_server(ip=ip2)
+        self.create_member(pool_id=poola['id'],
+                           ip_addr=g1.ip)
+        self.create_member(pool_id=poola['id'],
+                           ip_addr=g2.ip)
 
-            if vm1 and ip1:
-                vm1.stop_echo_server(ip=ip1)
+        repliesa = self.send_packets_to_vip(
+            [g1, g2], g_pinger, vipa['address'],
+            num_packets=PACKETS_TO_SEND)
 
-            self.cleanup_vms([(vm1, port1), (vm2, port2)])
+        self.check_host_replies_against_rr_baseline(
+            [g1, g2], repliesa,
+            total_expected=PACKETS_TO_SEND,
+            identifier="poolA")
 
-            self.clean_peered_site(peered_topo)
-            self.clean_peer(east_l2gw_topo)
-            self.clean_peer(west_l2gw_topo)
+    def connect_through_vtep_router(self):
+        a_cidr = "192.168.20.0/24"
+        a_pub_cidr = "200.200.120.0/24"
+        a_net = self.create_network('EAST')
+        a_sub = self.create_subnet('EAST', a_net['id'], a_cidr)
+        a_pub_net = self.create_network('PUB_EAST', external=True)
+        a_pub_sub = self.create_subnet('PUB_EAST', a_pub_net['id'], a_pub_cidr)
+        a_tenant_router = self.create_router('EAST',
+                                             pub_net_id=a_pub_net['id'],
+                                             priv_sub_ids=[])
+        a_tenant_router_port = self.create_port(
+            name='main_tr_port',
+            net_id=a_net['id'],
+            sub_id=a_sub['id'],
+            ip_addr=a_sub['gateway_ip'])
+        self.create_router_interface(
+            router_id=a_tenant_router['id'],
+            port_id=a_tenant_router_port['id'])
 
-            delete_neutron_main_pub_networks(self.api, east_topo)
-            delete_neutron_main_pub_networks(self.api, west_topo)
+        (porta, vma, ipa) = self.create_vm_server(
+            "A", a_net['id'], a_sub['gateway_ip'])
+
+        b_cidr = "192.168.30.0/24"
+        b_pub_cidr = "200.200.130.0/24"
+        b_net = self.create_network('WEST')
+        b_sub = self.create_subnet('WEST', b_net['id'], b_cidr)
+        b_pub_net = self.create_network('PUB_WEST', external=True)
+        b_pub_sub = self.create_subnet('PUB_WEST', b_pub_net['id'], b_pub_cidr)
+        b_tenant_router = self.create_router('WEST',
+                                             pub_net_id=b_pub_net['id'],
+                                             priv_sub_ids=[b_sub['id']])
+        (portb, vmb, ipb) = self.create_vm_server(
+            "B", b_net['id'], b_sub['gateway_ip'])
+        a_peer_topo = self.create_router_peering_topo(
+            name="EAST",
+            az_cidr="192.168.200.0/24",
+            az_gw="192.168.200.2",
+            tun_cidr="1.1.1.0/24",
+            tun_ip="1.1.1.2",
+            tun_gw="1.1.1.3",
+            tun_host="tun2",
+            tun_iface="eth1",
+            tenant_router_id=a_tenant_router['id'],
+            segment_id="100")
+
+        b_peer_topo = self.create_router_peering_topo(
+            name="WEST",
+            az_cidr="192.168.200.0/24",
+            az_gw="192.168.200.3",
+            tun_cidr="2.2.2.0/24",
+            tun_ip="2.2.2.2",
+            tun_gw="2.2.2.3",
+            tun_host="tun1",
+            tun_iface="eth1",
+            tenant_router_id=b_tenant_router['id'],
+            segment_id="100")
+
+        b_router_mac = b_peer_topo['az_iface_port']['mac_address']
+        self.add_peer(
+            a_peer_topo, a_tenant_router['id'], "100",
+            "192.168.200.3", b_router_mac, b_cidr,
+            b_peer_topo['az_iface_port']['id'], "2.2.2.2")
+        a_router_mac = a_peer_topo['az_iface_port']['mac_address']
+        self.add_peer(
+            b_peer_topo, b_tenant_router['id'], "100",
+            "192.168.200.2", a_router_mac, a_cidr,
+            a_peer_topo['az_iface_port']['id'], "1.1.1.2")
+
+        vmb.start_echo_server(ip_addr=ipb)
+        self.check_ping_and_tcp(vma, ipb)
+
+        vma.start_echo_server(ip_addr=ipa)
+        self.check_ping_and_tcp(vmb, ipa)
+        a_peer_topo['pub_network'] = a_pub_net
+        a_peer_topo['pub_subnet'] = a_pub_sub
+        a_peer_topo['main_network'] = a_net
+        a_peer_topo['main_subnet'] = a_sub
+        a_peer_topo['tenant_router'] = a_tenant_router
+        b_peer_topo['pub_network'] = b_pub_net
+        b_peer_topo['pub_subnet'] = b_pub_sub
+        b_peer_topo['main_network'] = b_net
+        b_peer_topo['main_subnet'] = b_sub
+        b_peer_topo['tenant_router'] = b_tenant_router
+        return a_peer_topo, b_peer_topo

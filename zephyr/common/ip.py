@@ -34,8 +34,14 @@ class IP(object):
         """
         return IP(*ip_str.split('/'))
 
+    def __eq__(self, other):
+        return self.ip == other.ip and self.subnet == other.subnet
+
     def __str__(self):
         return self.ip + "/" + self.subnet
+
+    def __repr__(self):
+        return self.__str__()
 
     def to_map(self):
         return {'ip': self.ip, 'subnet': self.subnet}

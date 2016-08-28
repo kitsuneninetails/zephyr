@@ -16,6 +16,7 @@ import glob
 import os
 import pwd
 import subprocess
+import time
 from zephyr.common.exceptions import *
 
 
@@ -32,6 +33,35 @@ REMOVENSCMD = _remove_ns
 DEBUG = 0
 
 
+def terminate_process(process):
+    """
+    Poll and terminate a process if it is still running.  If it doesn't exit
+    within 5 seconds, send a SIGKILL signal to the process.
+    :type process: subprocess.Popen
+    :return:
+    """
+    LinuxCLI().cmd('pkill -TERM -s ' + str(process.pid))
+    deadline = time.time() + 3
+    while process.poll() is None:
+        if time.time() > deadline:
+            break
+        time.sleep(0)
+
+    if process.poll() is None:
+        LinuxCLI().cmd('pkill -KILL -s ' + str(process.pid))
+        deadline = time.time() + 2
+        while not process.poll():
+            if time.time() > deadline:
+                break
+            time.sleep(0)
+
+    if (process.poll() and
+            (not process.stdin.closed and not process.stderr.closed)):
+        return process.communicate()
+
+    return None
+
+
 class CommandStatus(object):
     def __init__(self, process=None, command='', ret_code=0, stdout='',
                  stderr='', process_array=None):
@@ -45,11 +75,13 @@ class CommandStatus(object):
         :return:
         """
         self.process = process
+        """ :type: subprocess.Popen"""
         self.ret_code = ret_code
         self.command = command
         self.stdout = stdout
         self.stderr = stderr
         self.process_array = process_array
+        """ :type: list[subprocess.Popen]"""
 
     def __repr__(self):
         return 'PID: ' + str(self.process.pid) + '\n' + \
@@ -57,6 +89,19 @@ class CommandStatus(object):
                'CMD: ' + self.command + '\n' + \
                'STDOUT: [' + self.stdout + ']' + '\n' + \
                'STDERR: [' + self.stderr + ']'
+
+    def terminate(self):
+        out = None
+        if self.process_array:
+            for p in self.process_array:
+                out = terminate_process(p)
+        else:
+            out = terminate_process(self.process)
+
+        if out and len(out) >= 2:
+            self.stdout = out[0]
+            self.stderr = out[1]
+        return out
 
 
 class LinuxCLI(object):
@@ -101,7 +146,7 @@ class LinuxCLI(object):
         :param stdin: int File descriptor for std in (PIPE by default)
         :param stdout: int File descriptor for std in (PIPE by default)
         :param stderr: int File descriptor for std in (PIPE by default)
-        :return CommandStatus:
+        :return: zephyr.common.cli.CommandStatus
         """
         ret = CommandStatus()
         if len(commands) == 0:
@@ -194,7 +239,7 @@ class LinuxCLI(object):
         :param stdin: int File descriptor for std in (PIPE by default)
         :param stdout: int File descriptor for std in (PIPE by default)
         :param stderr: int File descriptor for std in (PIPE by default)
-        :return CommandStatus:
+        :return: zephyr.common.cli.CommandStatus
         """
         cmd = (('timeout ' + str(timeout) + ' ' if timeout is not None
                 else '') +
@@ -259,11 +304,18 @@ class LinuxCLI(object):
             return False
 
     def grep_cmd(self, cmd_line, grep, options=''):
-        if self.cmd(cmd_line + '| grep -q ' + options + ' "' +
-                    grep + '"').ret_code == 0:
+        grep_line = cmd_line + '| grep -q ' + options + ' "' + grep + '"'
+        if self.cmd(grep_line).ret_code == 0:
             return True
         else:
             return False
+
+    def grep_count(self, cmd_line, grep, pipe=False):
+        if pipe:
+            grep_cmd = ['grep', '-c', grep]
+            return int(self.cmd_pipe([cmd_line, grep_cmd]).stdout)
+        else:
+            return int(self.cmd(cmd_line + '| grep -c "' + grep + '"').stdout)
 
     def mkdir(self, dir_name):
         return self.cmd('mkdir -p ' + dir_name).stdout
@@ -356,6 +408,9 @@ class LinuxCLI(object):
     def read_from_file(file_name):
         file_ptr = open(file_name, 'r')
         return file_ptr.read()
+
+    def cat(self, file_path):
+        return self.cmd('cat ' + file_path).stdout
 
     @staticmethod
     def ls(file_filter='./*'):

@@ -67,9 +67,9 @@ class SocketException(TestException):
         super(SocketException, self).__init__(info)
 
 
-class InvallidConfigurationException(TestException):
+class InvalidConfigurationException(TestException):
     def __init__(self, config, reason):
-        super(InvallidConfigurationException, self).__init__(
+        super(InvalidConfigurationException, self).__init__(
             reason + " in config <" + str(config) + ">")
 
 
@@ -77,3 +77,8 @@ class PacketParsingException(TestException):
     def __init__(self, info, fatal=True):
         super(PacketParsingException, self).__init__(info)
         self.fatal = fatal
+
+
+class FileNotFoundException(TestException):
+    def __init__(self, info):
+        super(FileNotFoundException, self).__init__(info)
